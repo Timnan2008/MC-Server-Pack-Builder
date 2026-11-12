@@ -1,0 +1,15 @@
+.gradle/
+.gradle-user/
+.idea/
+MC-Server-Pack-Builder/
+build/
+desktop/bin/
+desktop/obj/
+/test-mods/
+/create-report.json
+*.mrpack
+*.zip
+*.log
+.env
+.env.*
+!.env.example
