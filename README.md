@@ -9,7 +9,7 @@ Java 21 scanner for Forge, NeoForge, and Fabric mod metadata, with a Windows WPF
 - `core.scan`: bounded, read-only JAR scanning, NeoForge entry-point inspection, and Modrinth project-side lookup
 - `cli`: conservative boolean server retention results; optional detailed JSON report
 - `api`: loopback-only scan API shared by the desktop interface
-- `desktop`: .NET 8 WPF Windows interface
+- `desktop`: .NET 8 WPF Windows interface, with separate window, input-inspection, API-client, and result-model layers
 
 ## Windows desktop app
 
@@ -22,7 +22,11 @@ dotnet run --project desktop/McServerPackBuilder.Desktop.csproj
 
 The desktop app starts its own Java API on an available loopback port and closes that backend when the window closes. This prevents a running desktop instance from silently reusing an outdated API process. It finds the backend under `build/install/mc-server-pack-builder/lib` in a development checkout, or under `backend/lib` beside a packaged desktop app. To run the API separately, use `.\gradlew.bat runServer` (default port `38241`).
 
-Choose one JAR, a mods folder, `.mrpack`, or `.zip`. The table shows `CLIENT_ONLY`, `SERVER_COMPATIBLE`, `KEEP_ON_SERVER`, or `UNKNOWN` and any scan diagnostics; **export JSON** is optional. `KEEP_ON_SERVER` means retain by default; it does not prove that a dedicated server can start with the mod. **制作服务端 ZIP** downloads and verifies Modrinth-pack JARs, filters confirmed client-only mods, installs the matching NeoForge server core in a staging directory, and writes a ZIP. The original pack is unchanged.
+Choose or drag one JAR, a mods folder, `.mrpack`, or `.zip` into the desktop window. The import area identifies Modrinth packs, CurseForge exports, ZIP files containing `mods/*.jar`, single JARs, and folders. Only a Modrinth pack with Minecraft and NeoForge versions enables **制作服务端 ZIP**. The task bar shows the current operation and uses an indeterminate progress indicator while the synchronous Java API is working; it does not claim a percentage that the backend cannot report. The table shows `CLIENT_ONLY`, `SERVER_COMPATIBLE`, `KEEP_ON_SERVER`, or `UNKNOWN` and any scan diagnostics; **export JSON** is optional. `KEEP_ON_SERVER` means retain by default; it does not prove that a dedicated server can start with the mod. **制作服务端 ZIP** downloads and verifies Modrinth-pack JARs, filters confirmed client-only mods, installs the matching NeoForge server core in a staging directory, and writes a ZIP. The original pack is unchanged.
+
+The WPF desktop theme lives in `desktop/Theme.xaml`. It provides the light blue palette, buttons, badges, cards, and table styles used by `MainWindow.xaml`. A compact top bar combines navigation and window controls. The workbench handles import and building; the scan results page shows counts, search, and diagnostics. The initial window is limited to the usable screen area, and page changes use a short transition. Future features are labeled as coming soon.
+
+The scan results page keeps the overview visible, while task status remains visible on both pages. Its search field filters paths, reasons, and side labels as you type; **清除筛选** restores all rows. Use `Ctrl+O` to choose a file, `Ctrl+F` to open and focus result search, and `Esc` to clear a focused search. The desktop entry point is `desktop/McServerPackBuilder.Desktop.csproj`; run the two PowerShell commands above from the repository root.
 
 For Modrinth packs whose JARs are only listed as downloads, the scanner sends the public Modrinth **project IDs** from the pack's CDN URLs to the Modrinth `/v2/projects` API in batches. It does not upload the pack, JAR bytes, file hashes, paths, or file names. The project-side declaration can distinguish, for example, Sodium (`CLIENT_ONLY`) from Applied Energistics 2 (`SERVER_COMPATIBLE`) even though neither JAR is embedded in the `.mrpack`. Project declarations summarize versions; mixed or missing declarations stay in `KEEP_ON_SERVER`, and network failures keep the indexed mods with a warning. The Java backend uses the Windows system proxy when one is configured.
 
@@ -30,7 +34,7 @@ For physical NeoForge JARs, ASM inspects `@Mod` entry points without executing c
 
 API: `GET /api/health`, `POST /api/scan` with JSON `{ "path": "C:\\path\\to\\mods" }`, and `POST /api/build` with `{ "path": "C:\\path\\to\\pack.mrpack", "output": "C:\\path\\to\\server.zip" }`. The API accepts local paths and listens only on loopback, so do not expose it through a proxy.
 
-The server ZIP includes `mods/`, server-side overrides, the official NeoForge installer, installed `libraries/`, `run.bat`/`run.sh`, and `start-server.bat`/`start-server.sh`. The build process verifies each indexed JAR with its SHA-512 hash and the installer with its Maven SHA-512. The installer may retry once if a dependency download fails its own checksum check. Extract the ZIP and start the server with the Java version required by that Minecraft release. The server will create `eula.txt` on first launch; review and accept it yourself. A successful build does not guarantee every retained mod will start on a dedicated server.
+The server ZIP includes retained `mods/`, server-side configuration and data files such as `kubejs/` and `defaultconfigs/`, server-side overrides, the official NeoForge installer, installed `libraries/`, `run.bat`/`run.sh`, and `start-server.bat`/`start-server.sh`. Files listed in the Modrinth index are downloaded or read from the pack and verified with their SHA-512 hash before copying. Embedded pack files and overrides are also retained unless they are known client-only content such as resource packs, shader packs, screenshots, saves, or client options; index entries with `env.server=unsupported` are excluded. The installer is verified with its Maven SHA-512. The installer may retry once if a dependency download fails its own checksum check. Extract the ZIP and start the server with the Java version required by that Minecraft release. The server will create `eula.txt` on first launch; review and accept it yourself. A successful build does not guarantee every retained mod will start on a dedicated server.
 
 ## Run
 

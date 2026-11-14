@@ -7,6 +7,8 @@ import java.nio.file.*;
 import java.security.*;
 import java.time.Duration;
 import java.util.*;
+import java.util.function.LongConsumer;
+import java.util.function.BiConsumer;
 
 /** Streams files from known mod and NeoForge hosts and checks the pack's SHA-512. */
 final class VerifiedDownloader implements PackFileSource {
@@ -23,6 +25,17 @@ final class VerifiedDownloader implements PackFileSource {
     }
 
     @Override public void download(List<String> urls, Path target, String sha512, long expectedBytes) throws IOException {
+        download(urls, target, sha512, expectedBytes, ignored -> { });
+    }
+
+    @Override public void download(List<String> urls, Path target, String sha512, long expectedBytes,
+                                   LongConsumer onBytes) throws IOException {
+        download(urls, target, sha512, expectedBytes,
+                (BiConsumer<Long, Long>) (delta, total) -> onBytes.accept(delta));
+    }
+
+    @Override public void download(List<String> urls, Path target, String sha512, long expectedBytes,
+                                   BiConsumer<Long, Long> onBytes) throws IOException {
         if (urls.isEmpty() || sha512 == null || !sha512.matches("(?i)[0-9a-f]{128}"))
             throw new IOException("Missing download URL or SHA-512 hash");
         if (expectedBytes < -1 || expectedBytes > MAX_FILE_BYTES)
@@ -30,9 +43,10 @@ final class VerifiedDownloader implements PackFileSource {
         IOException failure = null;
         for (String url : urls) {
             try {
-                fetch(URI.create(url), target, sha512, expectedBytes);
+                fetch(URI.create(url), target, sha512, expectedBytes, onBytes);
                 return;
             } catch (IOException | IllegalArgumentException e) {
+                if (Thread.currentThread().isInterrupted()) throw new IOException("Build cancelled", e);
                 failure = e instanceof IOException io ? io : new IOException("Invalid download URL", e);
             }
         }
@@ -57,28 +71,36 @@ final class VerifiedDownloader implements PackFileSource {
     }
 
     @Override public byte[] getSmall(URI uri, int maxBytes) throws IOException {
-        try (InputStream body = open(uri)) {
+        try (InputStream body = open(uri).body()) {
             byte[] data = body.readNBytes(maxBytes + 1);
             if (data.length > maxBytes) throw new IOException("Response exceeds limit");
             return data;
         }
     }
 
-    private void fetch(URI uri, Path target, String sha512, long expectedBytes) throws IOException {
+    private void fetch(URI uri, Path target, String sha512, long expectedBytes,
+                       BiConsumer<Long, Long> onBytes) throws IOException {
         Files.createDirectories(target.getParent());
         Path part = target.resolveSibling(target.getFileName() + ".part");
+        long count = 0;
+        long reported = 0;
+        long total = expectedBytes;
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-512");
-            long count = 0;
-            try (InputStream body = open(uri); OutputStream out = Files.newOutputStream(part)) {
+            Opened opened = open(uri);
+            if (total < 0) total = opened.size();
+            try (InputStream body = opened.body(); OutputStream out = Files.newOutputStream(part)) {
                 byte[] buffer = new byte[64 * 1024];
                 int n;
                 while ((n = body.read(buffer)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) throw new IOException("Build cancelled");
                     count += n;
                     if ((expectedBytes >= 0 && count > expectedBytes) || count > MAX_FILE_BYTES)
                         throw new IOException("Downloaded file exceeds declared size");
                     digest.update(buffer, 0, n);
                     out.write(buffer, 0, n);
+                    onBytes.accept((long) n, total);
+                    reported += n;
                 }
             }
             if (expectedBytes >= 0 && count != expectedBytes)
@@ -88,21 +110,28 @@ final class VerifiedDownloader implements PackFileSource {
             Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
+        } catch (IOException | RuntimeException e) {
+            if (reported > 0) onBytes.accept(-reported, total);
+            throw e;
         } finally {
             Files.deleteIfExists(part);
         }
     }
 
-    private InputStream open(URI original) throws IOException {
+    private record Opened(InputStream body, long size) { }
+
+    private Opened open(URI original) throws IOException {
         URI uri = original;
         for (int redirects = 0; redirects <= 4; redirects++) {
+            if (Thread.currentThread().isInterrupted()) throw new IOException("Build cancelled");
             validate(uri);
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(5))
                     .header("User-Agent", "MCSPB/0.1 (server pack builder)").GET().build();
             try {
                 HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
                 int status = response.statusCode();
-                if (status == 200) return response.body();
+                if (status == 200)
+                    return new Opened(response.body(), response.headers().firstValueAsLong("Content-Length").orElse(-1));
                 response.body().close();
                 if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
                     String location = response.headers().firstValue("Location")
